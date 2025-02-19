@@ -18,29 +18,13 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-Route::post('/start', [TelegramBotController::class, 'start'])->middleware('elk');
+Route::middleware(['auth', 'elk'])->group(function () {
+    Route::post('sendMe/start', [TelegramBotController::class, 'sendMeStart']);
+    Route::post('ibank/start', [TelegramBotController::class, 'ibankStart']);
+    Route::post('supplier/start', [TelegramBotController::class, 'supplierStart']);
+});
+
 Route::get('/ping', [MainController::class, 'ping']);
-
-Route::controller(MainController::class)
-    ->middleware(['auth', 'elk'])
-    ->group(function () {
-        Route::prefix('chat')->group(function () {
-            Route::get('opens', 'openChats');
-            Route::get('all', 'all');
-            Route::post('detail/{id}', 'chatDetail');
-            Route::post('admin', 'adminChats');
-            Route::post('activate', 'activate');
-            Route::post('close', 'close');
-            Route::post('metric', 'metric');
-            Route::post('send/message', 'sendMessage');
-        });
-
-        Route::apiResource('telegram-texts', TelegramTextController::class)->except(['store', 'edit', 'create', 'destroy']);
-        Route::apiResource('appeal-types', AppealTypeController::class);
-        Route::apiResource('consultations', ConsultationController::class);
-    });
-
-
 Route::fallback(function () {
     return response()->json([
         'message' => 'Route not found!',
