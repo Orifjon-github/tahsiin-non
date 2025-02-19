@@ -82,7 +82,7 @@ class Telegram
      */
     const LEFT_CHAT_MEMBER = 'left_chat_member';
 
-    private $bot_token = '';
+    public $bot_token;
     private $data = [];
     private $updates = [];
     private $proxy;
@@ -99,7 +99,6 @@ class Telegram
      */
     public function __construct(LogService $logService)
     {
-        $this->bot_token = env('TELEGRAM_BOT_TOKEN');
         $this->data = $this->getData();
         $this->logService = $logService;
         $this->proxy = [

@@ -19,6 +19,7 @@ class SupplierService
     )
     {
         $this->telegram = $telegram;
+        $this->telegram->bot_token = env('TELEGRAM_BOT_TOKEN');
         $this->chat_id = $telegram->ChatID();
         $this->text = $telegram->Text();
     }
