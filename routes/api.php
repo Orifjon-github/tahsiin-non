@@ -3,6 +3,7 @@
 use App\Http\Controllers\AppealTypeController;
 use App\Http\Controllers\ConsultationController;
 use App\Http\Controllers\MainController;
+use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\TelegramBotController;
 use App\Http\Controllers\TelegramTextController;
 use Illuminate\Support\Facades\Route;
@@ -30,8 +31,8 @@ Route::middleware(['auth', 'elk'])->group(function () {
     });
 
     Route::prefix('supplier')->group(function () {
-        Route::post('/start', [TelegramBotController::class, 'supplierStart']);
-        Route::post('/send', [TelegramBotController::class, 'supplierSend']);
+        Route::post('/start', [SupplierController::class, 'start']);
+        Route::post('/send-payment-info', [SupplierController::class, 'sendPaymentInfo']);
     });
 });
 

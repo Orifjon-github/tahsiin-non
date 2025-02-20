@@ -3,13 +3,17 @@
 namespace App\Services;
 
 
+use App\Helpers\Response;
 use App\Helpers\TelegramHelper;
 use App\Models\AppealType;
+use App\Models\SupplierUser;
 use App\Models\User;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Cache;
 
 class SupplierService
 {
+    use Response;
     private string $chat_id;
     private string|null $text;
     private Telegram $telegram;
@@ -20,12 +24,21 @@ class SupplierService
     {
         $this->telegram = $telegram;
         $this->telegram->bot_token = env('TELEGRAM_BOT_TOKEN');
-        $this->chat_id = $telegram->ChatID();
-        $this->text = $telegram->Text();
+    }
+
+    public function sendPaymentInfo($supplier_id, $message): JsonResponse
+    {
+        $users = SupplierUser::where('supplier_id', $supplier_id)->get();
+        foreach ($users as $user) {
+            $this->telegram->sendMessage(['chat_id' => $user->chat_id, 'text' => $message, 'parse_mode' => 'html']);
+        }
+        return $this->success((object)[]);
     }
 
     public function start(): bool
     {
+        $this->chat_id = $this->telegram->ChatID();
+        $this->text = $this->telegram->Text();
         $this->send($this->chat_id, 'Welcome');
         return 'OK';
         if ($this->text == '/start') {
