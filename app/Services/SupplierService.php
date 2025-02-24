@@ -3,6 +3,7 @@
 namespace App\Services;
 
 
+use App\Helpers\MainHelper;
 use App\Helpers\Response;
 use App\Helpers\TelegramHelper;
 use App\Models\AppealType;
@@ -18,18 +19,17 @@ class SupplierService
     private string|null $text;
     private Telegram $telegram;
 
-    public function __construct(
-        Telegram               $telegram,
-    )
+    public function __construct(Telegram $telegram)
     {
         $this->telegram = $telegram;
         $this->telegram->bot_token = env('TELEGRAM_BOT_TOKEN');
     }
 
-    public function sendPaymentInfo($supplier_id, $message): JsonResponse
+    public function sendPaymentInfo($supplier_id, $utid): JsonResponse
     {
         $users = SupplierUser::where('supplier_id', $supplier_id)->get();
         foreach ($users as $user) {
+            $message = MainHelper::makeMessage($utid);
             $this->telegram->sendMessage(['chat_id' => $user->chat_id, 'text' => $message, 'parse_mode' => 'html']);
         }
         return $this->success((object)[]);

@@ -44,9 +44,4 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
         'password' => 'hashed',
     ];
-
-    public function chats(): HasMany
-    {
-        return $this->hasMany(Chat::class);
-    }
 }

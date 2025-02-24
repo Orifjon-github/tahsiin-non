@@ -3,8 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Services\SupplierService;
+use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Request;
 
 class SupplierController extends Controller
 {
@@ -21,6 +21,6 @@ class SupplierController extends Controller
 
     public function sendPaymentInfo(Request $request): JsonResponse
     {
-        return $this->supplierService->sendPaymentInfo($request->supplier_id, $request->message);
+        return $this->supplierService->sendPaymentInfo($request->supplier_id, $request->utid);
     }
 }
