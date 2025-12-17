@@ -2,13 +2,10 @@
 
 namespace App\Services;
 
-
-use App\Helpers\TelegramHelper;
 use App\Models\Order;
 use App\Models\User;
 use App\Repositories\TelegramTextRepository;
 use App\Repositories\UserRepository;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class TelegramService
@@ -23,6 +20,7 @@ class TelegramService
     const STEP_START = 'start';
     const STEP_PHONE = 'phone';
     const STEP_ADDRESS = 'address';
+    const STEP_ADDRESS_METHOD = 'address_method'; // Yangi: Qolda yoki lokatsiya
     const STEP_CONFIRM_ADDRESS = 'confirm_address';
     const STEP_MAIN_MENU = 'main_menu';
     const STEP_SELECT_BREAD = 'select_bread';
@@ -45,14 +43,19 @@ class TelegramService
         '9:30-10:00' => '☀️ 9:30-10:00',
     ];
 
-    // Telegram guruh ID (o'zingizni qo'ying)
-    const ADMIN_GROUP_ID = '-1003626670279'; // Bu yerga guruh ID ni qo'ying
+    // Default manzil (QR kodsiz)
+    const DEFAULT_DISTRICT = 'Yashnabod tumani';
+    const DEFAULT_MAHALLA = 'Xavas mahalla';
+
+    // Telegram guruh ID
+    const ADMIN_GROUP_ID = '-1003626670279';
 
     public function __construct(
-        Telegram $telegram,
-        UserRepository $userRepository,
+        Telegram               $telegram,
+        UserRepository         $userRepository,
         TelegramTextRepository $textRepository
-    ) {
+    )
+    {
         $this->telegram = $telegram;
         $this->chat_id = $telegram->ChatID();
         $this->text = $telegram->Text();
@@ -66,6 +69,17 @@ class TelegramService
     public function start(): bool
     {
         try {
+            // MUHIM: Guruh xabarlarini ignore qilish
+            $chatType = $this->telegram->getData()['message']['chat']['type'] ?? 'private';
+
+            if ($chatType !== 'private') {
+                Log::info('Non-private chat message ignored', [
+                    'chat_type' => $chatType,
+                    'chat_id' => $this->chat_id
+                ]);
+                return false;
+            }
+
             // Agar /start yoki QR kod orqali kelgan bo'lsa
             if (str_starts_with($this->text, '/start')) {
                 $this->handleStart();
@@ -92,6 +106,10 @@ class TelegramService
 
                 case self::STEP_ADDRESS:
                     $this->handleAddressInput();
+                    break;
+
+                case self::STEP_ADDRESS_METHOD:
+                    $this->handleAddressMethod();
                     break;
 
                 case self::STEP_CONFIRM_ADDRESS:
@@ -134,8 +152,8 @@ class TelegramService
      */
     private function handleStart(): void
     {
-        // QR kod orqali kelgan bo'lsa: /start ref_12_45
-        // 12 - uy raqami, 45 - xonadon raqami
+        // QR kod orqali kelgan bo'lsa: /start ref_12
+        // 12 - uy raqami
         $payload = trim(str_replace('/start', '', $this->text));
         $params = explode('_', $payload);
 
@@ -147,30 +165,30 @@ class TelegramService
             ]
         );
 
-        // Agar QR kod orqali kelgan bo'lsa
-        if (count($params) >= 3 && $params[0] === 'ref') {
+        // Agar QR kod orqali kelgan bo'lsa (faqat uy raqami)
+        if (count($params) >= 2 && $params[0] === 'ref') {
             $building = $params[1] ?? null;
-            $apartment = $params[2] ?? null;
 
-            if ($building && $apartment) {
-                // Manzilni saqlash
+            if ($building) {
+                // Uy raqamini saqlash
                 $user->update([
                     'building_number' => $building,
-                    'apartment_number' => $apartment,
-                    'temp_address' => "Yashnabod tumani, Xavas mahalla, {$building}-uy, {$apartment}-xonadon"
+                    'temp_address' => self::DEFAULT_DISTRICT . ', ' . self::DEFAULT_MAHALLA . ', ' . $building . '-uy',
+                    'from_qr' => true // QR kod orqali kelganini belgilash
                 ]);
 
-                $this->sendWelcomeWithAddress($user);
+                $this->sendWelcomeWithBuilding($user);
                 return;
             }
         }
 
-        // Oddiy /start
+        // Oddiy /start (QR kodsiz)
+        $user->update(['from_qr' => false]);
         $this->sendWelcome();
     }
 
     /**
-     * Xush kelibsiz xabari
+     * Xush kelibsiz xabari (QR kodsiz)
      */
     private function sendWelcome(): void
     {
@@ -193,13 +211,13 @@ class TelegramService
     }
 
     /**
-     * QR kod orqali kelgan foydalanuvchiga xabar
+     * QR kod orqali kelgan foydalanuvchiga xabar (uy raqami bilan)
      */
-    private function sendWelcomeWithAddress(User $user): void
+    private function sendWelcomeWithBuilding(User $user): void
     {
         $text = "🍞 <b>Tahsiin Non</b>ga xush kelibsiz!\n\n";
-        $text .= "Sizning manzilingiz:\n";
-        $text .= "📍 <b>{$user->temp_address}</b>\n\n";
+        $text .= "Siz QR kod orqali kirdingiz.\n\n";
+        $text .= "📍 Manzil: <b>{$user->temp_address}</b>\n\n";
         $text .= "Iltimos, tilni tanlang:";
 
         $keyboard = $this->telegram->buildKeyBoard([
@@ -220,7 +238,7 @@ class TelegramService
      */
     private function handleLanguageSelection(): void
     {
-        $lang = match($this->text) {
+        $lang = match ($this->text) {
             self::LANG_UZ => 'uz',
             self::LANG_RU => 'ru',
             default => null
@@ -287,14 +305,14 @@ class TelegramService
         $user = User::where('chat_id', $this->chat_id)->first();
         $user->update(['phone' => $phone]);
 
-        // Agar QR kod orqali kelgan bo'lsa - manzilni tasdiqlash
-        if ($user->temp_address) {
-            $user->update(['step' => self::STEP_CONFIRM_ADDRESS]);
-            $this->askAddressConfirmation($user);
-        } else {
-            // Aks holda manzil so'rash
+        // Agar QR kod orqali kelgan bo'lsa - faqat xonadon raqami so'rash
+        if ($user->from_qr && $user->building_number) {
             $user->update(['step' => self::STEP_ADDRESS]);
-            $this->askAddress($user);
+            $this->askApartmentNumber($user);
+        } else {
+            // Aks holda to'liq manzil so'rash
+            $user->update(['step' => self::STEP_ADDRESS]);
+            $this->askFullAddress($user);
         }
     }
 
@@ -316,19 +334,111 @@ class TelegramService
     }
 
     /**
-     * Manzil so'rash (QR kod bo'lmasa)
+     * Xonadon raqami so'rash (QR kod orqali kelganlarga)
      */
-    private function askAddress(User $user): void
+    private function askApartmentNumber(User $user): void
     {
         $text = $user->language === 'uz'
-            ? "🏠 Iltimos, uy va xonadon raqamingizni kiriting:\n\nMasalan: <b>12-45</b>\n(12 - uy, 45 - xonadon)"
-            : "🏠 Пожалуйста, введите номер дома и квартиры:\n\nНапример: <b>12-45</b>\n(12 - дом, 45 - квартира)";
+            ? "🏠 Iltimos, xonadon raqamingizni kiriting yoki boshqa manzilni tanlang:\n\n"
+            . "📍 <b>{$user->temp_address}</b>"
+            : "🏠 Пожалуйста, введите номер квартиры или выберите другой адрес:\n\n"
+            . "📍 <b>{$user->temp_address}</b>";
+
+        $otherAddressBtn = $user->language === 'uz' ? '📍 Boshqa manzil' : '📍 Другой адрес';
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton($otherAddressBtn)]
+        ], false, true);
 
         $this->telegram->sendMessage([
             'chat_id' => $this->chat_id,
             'text' => $text,
+            'reply_markup' => $keyboard,
             'parse_mode' => 'html'
         ]);
+    }
+
+    /**
+     * To'liq manzil so'rash (QR kodsiz kirganlar uchun)
+     */
+    private function askFullAddress(User $user): void
+    {
+        $text = $user->language === 'uz'
+            ? "🏠 Iltimos, manzilni tanlang:"
+            : "🏠 Пожалуйста, выберите способ ввода адреса:";
+
+        $manualBtn = $user->language === 'uz' ? '✍️ Qo\'lda kiritish' : '✍️ Ввести вручную';
+        $locationBtn = $user->language === 'uz' ? '📍 Lokatsiya yuborish' : '📍 Отправить локацию';
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton($locationBtn, false, true)],
+            [$this->telegram->buildKeyboardButton($manualBtn)]
+        ], false, true);
+
+        $user->update(['step' => self::STEP_ADDRESS_METHOD]);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Manzil kiritish usulini tanlash
+     */
+    private function handleAddressMethod(): void
+    {
+        $user = User::where('chat_id', $this->chat_id)->first();
+
+        $manualBtn = $user->language === 'uz' ? '✍️ Qo\'lda kiritish' : '✍️ Ввести вручную';
+        $locationBtn = $user->language === 'uz' ? '📍 Lokatsiya yuborish' : '📍 Отправить локацию';
+
+        // Lokatsiya yuborilgan
+        if ($this->telegram->getUpdateType() === Telegram::LOCATION) {
+            $location = $this->telegram->Location();
+
+            // Texnik ishlar xabari
+            $text = $user->language === 'uz'
+                ? "🔧 <b>Texnik ishlar</b>\n\nHozircha lokatsiya orqali manzil aniqlash ishlamayapti.\n\nIltimos, manzilni qo'lda kiriting:"
+                : "🔧 <b>Технические работы</b>\n\nПока определение адреса по локации не работает.\n\nПожалуйста, введите адрес вручную:";
+
+            $keyboard = $this->telegram->buildKeyBoard([
+                [$this->telegram->buildKeyboardButton($manualBtn)]
+            ], false, true);
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text,
+                'reply_markup' => $keyboard,
+                'parse_mode' => 'html'
+            ]);
+
+            // TODO: Kelajakda lokatsiya bilan ishlash logikasini qo'shish
+            // $this->processLocation($location, $user);
+
+            return;
+        }
+
+        // Qo'lda kiritish tanlangan
+        if ($this->text === $manualBtn) {
+            $text = $user->language === 'uz'
+                ? "🏠 Manzilni kiriting:\n\nMasalan: <b>Sergeli tumani, 5-mavze, 12-uy, 45-xonadon</b>"
+                : "🏠 Введите адрес:\n\nНапример: <b>Сергелийский район, 5-массив, дом 12, квартира 45</b>";
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text,
+                'parse_mode' => 'html'
+            ]);
+
+            $user->update(['step' => self::STEP_ADDRESS]);
+            return;
+        }
+
+        // Noto'g'ri tanlov
+        $this->askFullAddress($user);
     }
 
     /**
@@ -338,32 +448,72 @@ class TelegramService
     {
         $user = User::where('chat_id', $this->chat_id)->first();
 
-        // Format: 12-45 yoki 12 45
-        if (preg_match('/^(\d+)[-\s](\d+)$/', trim($this->text), $matches)) {
-            $building = $matches[1];
-            $apartment = $matches[2];
+        $otherAddressBtn = $user->language === 'uz' ? '📍 Boshqa manzil' : '📍 Другой адрес';
 
-            $address = "Sergeli tumani, 5-mavze, {$building}-uy, {$apartment}-xonadon";
-
+        // Agar "Boshqa manzil" tanlangan bo'lsa
+        if ($this->text === $otherAddressBtn) {
             $user->update([
-                'building_number' => $building,
-                'apartment_number' => $apartment,
-                'temp_address' => $address,
-                'step' => self::STEP_CONFIRM_ADDRESS
+                'building_number' => null,
+                'temp_address' => null,
+                'from_qr' => false
             ]);
+            $this->askFullAddress($user);
+            return;
+        }
 
-            $this->askAddressConfirmation($user);
-        } else {
+        // Agar QR kod orqali kelgan bo'lsa - faqat xonadon raqami
+        if ($user->from_qr && $user->building_number) {
+            // Faqat raqam kiritilgan
+            if (preg_match('/^\d+$/', trim($this->text))) {
+                $apartment = trim($this->text);
+                $address = self::DEFAULT_DISTRICT . ', ' . self::DEFAULT_MAHALLA . ', '
+                    . $user->building_number . '-uy, ' . $apartment . '-xonadon';
+
+                $user->update([
+                    'apartment_number' => $apartment,
+                    'temp_address' => $address,
+                    'step' => self::STEP_CONFIRM_ADDRESS
+                ]);
+
+                $this->askAddressConfirmation($user);
+                return;
+            }
+
+            // Noto'g'ri format
             $text = $user->language === 'uz'
-                ? "❌ Noto'g'ri format. Iltimos, qaytadan kiriting.\n\nMasalan: <b>12-45</b>"
-                : "❌ Неверный формат. Пожалуйста, введите снова.\n\nНапример: <b>12-45</b>";
+                ? "❌ Faqat xonadon raqamini kiriting.\n\nMasalan: <b>45</b>"
+                : "❌ Введите только номер квартиры.\n\nНапример: <b>45</b>";
 
             $this->telegram->sendMessage([
                 'chat_id' => $this->chat_id,
                 'text' => $text,
                 'parse_mode' => 'html'
             ]);
+            return;
         }
+
+        // Qo'lda to'liq manzil kiritish
+        $address = trim($this->text);
+
+        if (strlen($address) < 10) {
+            $text = $user->language === 'uz'
+                ? "❌ Manzil juda qisqa. Iltimos, to'liq manzilni kiriting.\n\nMasalan: <b>Sergeli tumani, 5-mavze, 12-uy, 45-xonadon</b>"
+                : "❌ Адрес слишком короткий. Пожалуйста, введите полный адрес.\n\nНапример: <b>Сергелийский район, 5-массив, дом 12, квартира 45</b>";
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text,
+                'parse_mode' => 'html'
+            ]);
+            return;
+        }
+
+        $user->update([
+            'temp_address' => $address,
+            'step' => self::STEP_CONFIRM_ADDRESS
+        ]);
+
+        $this->askAddressConfirmation($user);
     }
 
     /**
@@ -408,8 +558,14 @@ class TelegramService
             ]);
             $this->showMainMenu();
         } else {
-            $user->update(['step' => self::STEP_ADDRESS]);
-            $this->askAddress($user);
+            // Manzilni qayta kiritish
+            if ($user->from_qr && $user->building_number) {
+                $user->update(['step' => self::STEP_ADDRESS]);
+                $this->askApartmentNumber($user);
+            } else {
+                $user->update(['step' => self::STEP_ADDRESS_METHOD]);
+                $this->askFullAddress($user);
+            }
         }
     }
 
@@ -815,7 +971,7 @@ class TelegramService
         }
 
         foreach ($orders as $order) {
-            $status = match($order->status) {
+            $status = match ($order->status) {
                 'confirmed' => $user->language === 'uz' ? '⏳ Tayyorlanmoqda' : '⏳ Готовится',
                 'completed' => $user->language === 'uz' ? '✅ Yetkazildi' : '✅ Доставлено',
                 'cancelled' => $user->language === 'uz' ? '❌ Bekor qilindi' : '❌ Отменён',
