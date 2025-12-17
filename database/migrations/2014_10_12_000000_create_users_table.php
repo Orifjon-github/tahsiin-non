@@ -27,7 +27,6 @@ return new class extends Migration
 
             $table->integer('consultation')->nullable();
             $table->boolean('is_active')->default(true);
-            $table->timestamps();
             $table->softDeletes();
 
             $table->index('chat_id');
