@@ -31,7 +31,21 @@ class TelegramBotController extends Controller
 
             // Oddiy xabar
             if (isset($update['message'])) {
-                $this->telegramService->start();
+                $chatType = $update['message']['chat']['type'] ?? 'private';
+
+                // MUHIM: Faqat shaxsiy chatda javob berish
+                // Guruhlarda (group, supergroup, channel) e'tibor bermaslik
+                if ($chatType === 'private') {
+                    $this->telegramService->start();
+                } else {
+                    // Guruhda - faqat log yozish
+                    Log::channel('telegram')->info('Group message ignored', [
+                        'chat_type' => $chatType,
+                        'chat_id' => $update['message']['chat']['id'] ?? null,
+                        'text' => $update['message']['text'] ?? null
+                    ]);
+                }
+
                 return response()->json(['ok' => true]);
             }
 
