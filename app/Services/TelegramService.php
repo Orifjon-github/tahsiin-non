@@ -620,6 +620,11 @@ class TelegramService
             ($user->language === 'ru' && $this->text === '⚙️ Настройки')
         ) {
             $this->showSettings($user);
+        } elseif (
+            ($user->language === 'uz' && $this->text === '📍 Manzilni o\'zgartirish') ||
+            ($user->language === 'ru' && $this->text === '📍 Изменить адрес')
+        ) {
+            $this->askFullAddress($user);
         } else {
             $this->showMainMenu();
         }
