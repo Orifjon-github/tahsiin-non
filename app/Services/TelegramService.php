@@ -4,515 +4,977 @@ namespace App\Services;
 
 
 use App\Helpers\TelegramHelper;
-use App\Models\AppealType;
-use App\Models\Consultation;
 use App\Models\User;
-use App\Repositories\AppealRepository;
 use App\Repositories\TelegramTextRepository;
 use App\Repositories\UserRepository;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 class TelegramService
 {
     private string $chat_id;
-    private string|null $text;
+    private ?string $text;
     private Telegram $telegram;
     private UserRepository $userRepository;
     private TelegramTextRepository $textRepository;
-    private AppealRepository $appealRepository;
-    private Consultation $consultation;
+
+    // Qadamlar
+    const STEP_START = 'start';
+    const STEP_PHONE = 'phone';
+    const STEP_ADDRESS = 'address';
+    const STEP_CONFIRM_ADDRESS = 'confirm_address';
+    const STEP_MAIN_MENU = 'main_menu';
+    const STEP_SELECT_BREAD = 'select_bread';
+    const STEP_SELECT_TIME = 'select_time';
+    const STEP_CONFIRM_ORDER = 'confirm_order';
+
+    // Tillar
+    const LANG_UZ = '🇺🇿 O\'zbekcha';
+    const LANG_RU = '🇷🇺 Русский';
+
+    // Vaqt oraliq lari (6:00 - 10:00)
+    const TIME_SLOTS = [
+        '6:00-6:30' => '🌅 6:00-6:30',
+        '6:30-7:00' => '🌅 6:30-7:00',
+        '7:00-7:30' => '☀️ 7:00-7:30',
+        '7:30-8:00' => '☀️ 7:30-8:00',
+        '8:00-8:30' => '☀️ 8:00-8:30',
+        '8:30-9:00' => '☀️ 8:30-9:00',
+        '9:00-9:30' => '☀️ 9:00-9:30',
+        '9:30-10:00' => '☀️ 9:30-10:00',
+    ];
+
+    // Telegram guruh ID (o'zingizni qo'ying)
+    const ADMIN_GROUP_ID = '-5030932865'; // Bu yerga guruh ID ni qo'ying
 
     public function __construct(
-        Telegram               $telegram,
-        UserRepository         $userRepository,
-        TelegramTextRepository $textRepository,
-        AppealRepository       $appealRepository,
-        Consultation           $consultation,
-    )
-    {
+        Telegram $telegram,
+        UserRepository $userRepository,
+        TelegramTextRepository $textRepository
+    ) {
         $this->telegram = $telegram;
         $this->chat_id = $telegram->ChatID();
         $this->text = $telegram->Text();
         $this->userRepository = $userRepository;
         $this->textRepository = $textRepository;
-        $this->appealRepository = $appealRepository;
-        $this->consultation = $consultation;
     }
 
+    /**
+     * Asosiy ishlov berish funksiyasi
+     */
     public function start(): bool
     {
-        if ($this->text == '/start' || $this->textRepository->checkTextWithKeyboard($this->text)) {
-            $this->handleRegistration();
-        } else {
-            switch ($this->userRepository->page($this->chat_id)) {
-                case TelegramHelper::START_STEP:
-                    switch ($this->text) {
-                        case TelegramHelper::UZBEK_LANGUAGE:
-                            $this->userRepository->language($this->chat_id, 'uz');
-                            $this->askPhone();
-                            break;
-                        case TelegramHelper::RUSSIAN_LANGUAGE:
-                            $this->userRepository->language($this->chat_id, 'ru');
-                            $this->askPhone();
-                            break;
-                        case TelegramHelper::ENGLISH_LANGUAGE:
-                            $this->userRepository->language($this->chat_id, 'en');
-                            $this->askPhone();
-                            break;
-                        default:
-                            $this->chooseLanguage();
-                            break;
-                    }
-                    break;
-                case TelegramHelper::PHONE_STEP:
-                    if ($phone = TelegramHelper::checkPhone($this->text)) {
-                        $this->userRepository->phone($this->chat_id, $phone);
-                        $this->showMainPage();
-                    } else {
-                        $this->askCorrectPhone();
-                    }
-                    break;
-                case TelegramHelper::MAIN_PAGE_STEP:
-                    $keyword = $this->textRepository->getKeyword($this->text, $this->userRepository->language($this->chat_id));
-                    switch ($keyword) {
-                        case 'settings_button':
-                            $this->showSettings();
-                            break;
-                        case 'contact_button':
-                            $this->showContact();
-                            break;
-                        case 'help_button':
-                            $this->showHelp();
-                            break;
-                        case 'appeals_button':
-                            $this->showAppeals();
-                            break;
-                        case 'consultation_button':
-                            $this->showConsultation();
-                            break;
-                        case 'history_of_appeals_button':
-                            $this->historyAppeals();
-                            break;
-                        default:
-                            $this->showMainPage();
-                            break;
-                    }
-                    break;
-                case TelegramHelper::SETTINGS_STEP:
-                    $keyword = $this->textRepository->getKeyword($this->text, $this->userRepository->language($this->chat_id));
-                    switch ($keyword) {
-                        case 'change_language_button':
-                            $this->chooseLanguage(true);
-                            break;
-                        case 'delete_account_button':
-                            $this->deleteAccount();
-                            break;
-                        case 'main_page_button':
-                            $this->showMainPage();
-                            break;
-                        default:
-                            $this->showSettings();
-                            break;
-                    }
-                    break;
-                case TelegramHelper::DELETE_ACCOUNT_STEP:
-                    $keyword = $this->textRepository->getKeyword($this->text, $this->userRepository->language($this->chat_id));
-                    switch ($keyword) {
-                        case 'confirm_delete_account_button':
-                            $this->confirmDeleteAccount();
-                            break;
-                        case 'cancel_delete_account_button':
-                            $this->cancelDeleteAccount();
-                            break;
-                        default:
-                            $this->deleteAccount();
-                            break;
+        try {
+            // Agar /start yoki QR kod orqali kelgan bo'lsa
+            if (str_starts_with($this->text, '/start')) {
+                $this->handleStart();
+                return true;
+            }
 
-                    }
+            $user = User::where('chat_id', $this->chat_id)->first();
+
+            if (!$user) {
+                $this->sendWelcome();
+                return true;
+            }
+
+            $step = $user->step ?? self::STEP_START;
+
+            switch ($step) {
+                case self::STEP_START:
+                    $this->handleLanguageSelection();
                     break;
-                case TelegramHelper::CHANGE_LANG_STEP:
-                    switch ($this->text) {
-                        case TelegramHelper::UZBEK_LANGUAGE:
-                            $this->userRepository->language($this->chat_id, 'uz');
-                            break;
-                        case TelegramHelper::RUSSIAN_LANGUAGE:
-                            $this->userRepository->language($this->chat_id, 'ru');
-                            break;
-                        case TelegramHelper::ENGLISH_LANGUAGE:
-                            $this->userRepository->language($this->chat_id, 'en');
-                            break;
-                        default:
-                            $this->chooseLanguage();
-                            break;
-                    }
-                    $this->successChangeLang();
+
+                case self::STEP_PHONE:
+                    $this->handlePhoneInput();
                     break;
-                case TelegramHelper::APPEALS_STEP:
-                    $lang = $this->userRepository->language($this->chat_id);
-                    $attr = ($lang == 'uz') ? 'name' : "name_$lang";
-                    $appeal = $this->appealRepository->getAppealType($attr, $this->text);
-                    if ($appeal) {
-                        $this->appealRepository->updateOrCreateAppeal($this->chat_id, ['appeal_type_id' => $appeal->id]);
-                        $this->askAppealTitle();
-                    } elseif ($this->textRepository->getKeyword($this->text, $this->userRepository->language($this->chat_id)) == 'main_page_button') {
-                        $this->showMainPage();
-                    } else {
-                        $this->showAppeals();
-                    }
+
+                case self::STEP_ADDRESS:
+                    $this->handleAddressInput();
                     break;
-                case TelegramHelper::CONSULTATION:
-                    $lang = $this->userRepository->language($this->chat_id);
-                    $attr = ($lang == 'uz') ? 'name' : "name_$lang";
-                    $consultation = $this->consultation::findConsultation($attr, $this->text);
-                    if ($consultation) {
-                        $children = $this->consultation::getChildrenOrFalse($consultation->id);
-                        if ($children) $this->userRepository->consultation($this->chat_id, $consultation->id);
-                        $this->showConsultationInfoOrChildren($consultation);
-                    } else {
-                        $keyword = $this->textRepository->getKeyword($this->text, $this->userRepository->language($this->chat_id));
-                        switch ($keyword) {
-                            case 'main_page_button':
-                                $this->showMainPage();
-                                break;
-                            case 'back_button':
-                                $consultation = $this->consultation::find($this->userRepository->consultation($this->chat_id));
-                                $parent = $consultation->parent;
-                                if ($parent) {
-                                    $this->userRepository->consultation($this->chat_id, $parent->id);
-                                    $oldParent = $parent->parent;
-                                    if ($oldParent) {
-                                        $this->showConsultationInfoOrChildren($oldParent);
-                                    } else {
-                                        $this->showConsultationInfoOrChildren($parent);
-                                    }
-                                } else {
-                                    $this->showConsultation();
-                                }
-                                break;
-                            default:
-                                $this->showConsultation();
-                        }
-                    }
+
+                case self::STEP_CONFIRM_ADDRESS:
+                    $this->handleAddressConfirmation();
                     break;
-                case TelegramHelper::ASK_APPEAL_TITLE:
-                    if ($this->text == 'back_button') {
-                        $this->back(TelegramHelper::APPEALS_STEP, 'showAppeals');
-                    } elseif ($this->text == 'main_page_button') {
-                        $this->showMainPage();
-                    } else {
-                        $this->appealRepository->updateOrCreateAppeal($this->chat_id, ['title' => $this->text]);
-                        $this->askAppealDescription();
-                    }
+
+                case self::STEP_MAIN_MENU:
+                    $this->handleMainMenu();
                     break;
-                case TelegramHelper::ASK_APPEAL_DESCRIPTION:
-                    if ($this->text == 'back_button') {
-                        $this->back(TelegramHelper::APPEALS_STEP, 'askAppealTitle');
-                    } elseif ($this->text == 'main_page_button') {
-                        $this->showMainPage();
-                    } else {
-                        $chat = $this->appealRepository->updateOrCreateAppeal($this->chat_id, ['message' => $this->text, 'status' => 'ready']);
-                        $this->successAcceptAppeal($chat);
-                    }
+
+                case self::STEP_SELECT_BREAD:
+                    $this->handleBreadSelection();
                     break;
-                case TelegramHelper::ACTIVE_CHAT:
-                    $message = $this->appealRepository->appealMessage($this->chat_id, $this->text);
-                    if (!$message) {
-                        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => 'active_chat_not_found_text']);
-                        $this->showAppeals();
-                    }
+
+                case self::STEP_SELECT_TIME:
+                    $this->handleTimeSelection();
                     break;
-                case TelegramHelper::HELP_STEP:
-                    $keyword = $this->textRepository->getKeyword($this->text, $this->userRepository->language($this->chat_id));
-                    switch ($keyword) {
-                        case 'main_page_button':
-                            $this->showMainPage();
-                            break;
-                        case 'help_capability_button':
-                            $this->showHelp(true);
-                            break;
-                        case 'help_instructions_button':
-                            $this->showHelp(false, true);
-                            break;
-                        default:
-                            $this->showHelp();
-                    }
+
+                case self::STEP_CONFIRM_ORDER:
+                    $this->handleOrderConfirmation();
+                    break;
+
+                default:
+                    $this->showMainMenu();
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Tahsiin Bot Error: ' . $e->getMessage());
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => '❌ Xatolik yuz berdi. Iltimos qaytadan urinib ko\'ring.',
+            ]);
+            return false;
+        }
+    }
+
+    /**
+     * /start buyrug'ini ishlov berish
+     */
+    private function handleStart(): void
+    {
+        // QR kod orqali kelgan bo'lsa: /start ref_12_45
+        // 12 - uy raqami, 45 - xonadon raqami
+        $params = explode('_', $this->text);
+
+        $user = User::firstOrCreate(
+            ['chat_id' => $this->chat_id],
+            [
+                'step' => self::STEP_START,
+                'language' => 'uz',
+            ]
+        );
+
+        // Agar QR kod orqali kelgan bo'lsa
+        if (count($params) >= 3 && $params[1] === 'ref') {
+            $building = $params[2] ?? null;
+            $apartment = $params[3] ?? null;
+
+            if ($building && $apartment) {
+                // Manzilni saqlash
+                $user->update([
+                    'building_number' => $building,
+                    'apartment_number' => $apartment,
+                    'temp_address' => "Sergeli tumani, 5-mavze, {$building}-uy, {$apartment}-xonadon"
+                ]);
+
+                $this->sendWelcomeWithAddress($user);
+                return;
             }
         }
-        return true;
+
+        // Oddiy /start
+        $this->sendWelcome();
     }
 
-    private function chooseLanguage($is_setting = false): void
+    /**
+     * Xush kelibsiz xabari
+     */
+    private function sendWelcome(): void
     {
-        $text = TelegramHelper::CHOOSE_LANGUAGE_TEXT;
-        if ($is_setting) $this->userRepository->page($this->chat_id, TelegramHelper::CHANGE_LANG_STEP);
-        $option = [[$this->telegram->buildKeyboardButton(TelegramHelper::UZBEK_LANGUAGE)], [$this->telegram->buildKeyboardButton(TelegramHelper::RUSSIAN_LANGUAGE), $this->telegram->buildKeyboardButton(TelegramHelper::ENGLISH_LANGUAGE)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
-    }
+        $text = "🍞 <b>Tahsiin Non</b>ga xush kelibsiz!\n\n";
+        $text .= "Har kuni yangi pishgan issiq nonni eshigingizgacha yetkazib beramiz.\n\n";
+        $text .= "🕐 Yetkazish vaqti: 6:00-10:00\n\n";
+        $text .= "Iltimos, tilni tanlang:";
 
-    private function askPhone(): void
-    {
-        $text = $this->textRepository->getOrCreate('ask_phone_text', $this->userRepository->language($this->chat_id));
-        $textButton = $this->textRepository->getOrCreate('ask_phone_button', $this->userRepository->language($this->chat_id));
-        $this->userRepository->page($this->chat_id, TelegramHelper::PHONE_STEP);
-        $option = [[$this->telegram->buildKeyboardButton($textButton, true)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
-    }
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton(self::LANG_UZ)],
+            [$this->telegram->buildKeyboardButton(self::LANG_RU)]
+        ], false, true);
 
-    private function askCorrectPhone(): void
-    {
-        $text = $this->textRepository->getOrCreate('ask_correct_phone_text', $this->userRepository->language($this->chat_id));
-        $textButton = $this->textRepository->getOrCreate('ask_phone_button', $this->userRepository->language($this->chat_id));
-        $option = [[$this->telegram->buildKeyboardButton($textButton, true)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
-    }
-
-    public function showMainPage(): void
-    {
-        $text = $this->textRepository->getOrCreate('main_page_text', $this->userRepository->language($this->chat_id));
-        $textButton_1 = $this->textRepository->getOrCreate('consultation_button', $this->userRepository->language($this->chat_id));
-        $textButton_2 = $this->textRepository->getOrCreate('help_button', $this->userRepository->language($this->chat_id));
-        $textButton_3 = $this->textRepository->getOrCreate('appeals_button', $this->userRepository->language($this->chat_id));
-        $textButton_4 = $this->textRepository->getOrCreate('history_of_appeals_button', $this->userRepository->language($this->chat_id));
-        $textButton_5 = $this->textRepository->getOrCreate('settings_button', $this->userRepository->language($this->chat_id));
-        $textButton_6 = $this->textRepository->getOrCreate('contact_button', $this->userRepository->language($this->chat_id));
-        $this->userRepository->page($this->chat_id, TelegramHelper::MAIN_PAGE_STEP);
-        $option = [[$this->telegram->buildKeyboardButton($textButton_1), $this->telegram->buildKeyboardButton($textButton_3), $this->telegram->buildKeyboardButton($textButton_5)], [$this->telegram->buildKeyboardButton($textButton_2), $this->telegram->buildKeyboardButton($textButton_4), $this->telegram->buildKeyboardButton($textButton_6)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
-    }
-
-    public function deleteAccount(): void
-    {
-        $text = $this->textRepository->getOrCreate('confirm_delete_account_text', $this->userRepository->language($this->chat_id));
-        $textConfirm = $this->textRepository->getOrCreate('confirm_delete_account_button', $this->userRepository->language($this->chat_id));
-        $textCancel = $this->textRepository->getOrCreate('cancel_delete_account_button', $this->userRepository->language($this->chat_id));
-        $backButton = $this->textRepository->getOrCreate('back_button', $this->userRepository->language($this->chat_id));
-        $this->userRepository->page($this->chat_id, TelegramHelper::DELETE_ACCOUNT_STEP);
-        $option = [[$this->telegram->buildKeyboardButton($textCancel), $this->telegram->buildKeyboardButton($textConfirm)], [$this->telegram->buildKeyboardButton($backButton)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
-    }
-
-    public function cancelDeleteAccount(): void
-    {
-        $text = $this->textRepository->getOrCreate('cancel_delete_account_text', $this->userRepository->language($this->chat_id));
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html']);
-        $this->showMainPage();
-    }
-
-    public function confirmDeleteAccount(): void
-    {
-        $this->userRepository->delete($this->chat_id);
-        $text = $this->textRepository->getOrCreate('success_delete_account_text', $this->userRepository->language($this->chat_id));
-        $textRegister = $this->textRepository->getOrCreate('register_button', $this->userRepository->language($this->chat_id));
-        $this->userRepository->page($this->chat_id, TelegramHelper::START_STEP);
-        $option = [[$this->telegram->buildKeyboardButton($textRegister)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
-    }
-
-    public function showContact(): void
-    {
-        $text = $this->textRepository->getOrCreate('contact_text', $this->userRepository->language($this->chat_id));
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html', 'disable_web_page_preview' => true]);
-    }
-
-    public function showHelp($capability = false, $instruction = false): void
-    {
-        $this->userRepository->page($this->chat_id, TelegramHelper::HELP_STEP);
-        $text = $capability ? $this->textRepository->getOrCreate('help_capability_text', $this->userRepository->language($this->chat_id)) : $this->textRepository->getOrCreate('help_text', $this->userRepository->language($this->chat_id));
-        $helpButton_1 = $this->textRepository->getOrCreate('help_capability_button', $this->userRepository->language($this->chat_id));
-        $helpButton_2 = $this->textRepository->getOrCreate('help_instructions_button', $this->userRepository->language($this->chat_id));
-        $textButtonMain = $this->textRepository->getOrCreate('main_page_button', $this->userRepository->language($this->chat_id));
-        $option = [[$this->telegram->buildKeyboardButton($helpButton_1), $this->telegram->buildKeyboardButton($helpButton_2)], [$this->telegram->buildKeyboardButton($textButtonMain)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        if ($instruction) {
-            $documentPath = env('APP_URL') . '/storage/instruction.pdf';
-            $caption = $this->textRepository->getOrCreate('help_instruction_caption_text', $this->userRepository->language($this->chat_id));
-            $this->telegram->sendDocument(['chat_id' => $this->chat_id, 'document' => $documentPath, 'caption' => $caption, 'parse_mode' => 'html']);
-        } else {
-            $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html', 'disable_web_page_preview' => true]);
-        }
-    }
-
-    public function showAppeals(): void
-    {
-        $cacheKey = "appeals_{$this->chat_id}";
-
-        $text = $this->textRepository->getOrCreate('choose_appeals_text', $this->userRepository->language($this->chat_id));
-
-        $cacheData = Cache::remember($cacheKey, 86400, function () {
-            $appeals = AppealType::all();
-            $keyboard = $this->makeDynamicKeyboards($appeals, false, true);
-            return ['appeals' => $appeals, 'keyboard' => $keyboard];
-        });
-
-        $this->userRepository->page($this->chat_id, TelegramHelper::APPEALS_STEP);
         $this->telegram->sendMessage([
             'chat_id' => $this->chat_id,
             'text' => $text,
-            'reply_markup' => $cacheData['keyboard'],
+            'reply_markup' => $keyboard,
             'parse_mode' => 'html'
         ]);
     }
 
-    public function showConsultation(): void
+    /**
+     * QR kod orqali kelgan foydalanuvchiga xabar
+     */
+    private function sendWelcomeWithAddress(User $user): void
     {
-        $text = $this->textRepository->getOrCreate('choose_consultation_text', $this->userRepository->language($this->chat_id));
-        $parentConsultations = $this->consultation::getTopParents();
-        $this->userRepository->page($this->chat_id, TelegramHelper::CONSULTATION);
-        $keyboard = $this->makeDynamicKeyboards($parentConsultations);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
+        $text = "🍞 <b>Tahsiin Non</b>ga xush kelibsiz!\n\n";
+        $text .= "Sizning manzilingiz:\n";
+        $text .= "📍 <b>{$user->temp_address}</b>\n\n";
+        $text .= "Iltimos, tilni tanlang:";
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton(self::LANG_UZ)],
+            [$this->telegram->buildKeyboardButton(self::LANG_RU)]
+        ], false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
     }
 
-    private function makeDynamicKeyboards($objects, $backButton = false, $onetime = false): bool|string
+    /**
+     * Til tanlash
+     */
+    private function handleLanguageSelection(): void
     {
-        $option = [];
-        $temp = [];
-        $lang = $this->userRepository->language($this->chat_id);
-        foreach ($objects as $object) {
-            $buttonText = TelegramHelper::getValue($object, $lang);
-            $temp[] = $this->telegram->buildKeyboardButton($buttonText);
-            if (count($temp) === 3) {
-                $option[] = $temp;
-                $temp = [];
-            }
+        $lang = match($this->text) {
+            self::LANG_UZ => 'uz',
+            self::LANG_RU => 'ru',
+            default => null
+        };
+
+        if (!$lang) {
+            $this->sendWelcome();
+            return;
         }
 
-        if (!empty($temp)) {
-            $option[] = $temp;
-        }
-        $textButtonMain = $this->textRepository->getOrCreate('main_page_button', $this->userRepository->language($this->chat_id));
-        $textButtonBack = $this->textRepository->getOrCreate('back_button', $this->userRepository->language($this->chat_id));
-        $option[] = $backButton ? [$this->telegram->buildKeyboardButton($textButtonMain), $this->telegram->buildKeyboardButton($textButtonBack)] : [$this->telegram->buildKeyboardButton($textButtonMain)];
+        $user = User::where('chat_id', $this->chat_id)->first();
+        $user->update([
+            'language' => $lang,
+            'step' => self::STEP_PHONE
+        ]);
 
-        return $this->telegram->buildKeyBoard($option, $onetime, true);
+        $this->askPhone($user);
     }
 
-    public function showConsultationInfoOrChildren($consultation): void
+    /**
+     * Telefon raqam so'rash
+     */
+    private function askPhone(User $user): void
     {
-        $children = $this->consultation::getChildrenOrFalse($consultation->id);
-        if ($children) {
-            $text = $this->textRepository->getOrCreate('choose_consultation_text', $this->userRepository->language($this->chat_id));
-            $keyboard = $this->makeDynamicKeyboards($children, true);
-            $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
+        $text = $user->language === 'uz'
+            ? "📱 Iltimos, telefon raqamingizni yuboring:\n\nTugmani bosing yoki +998 formatida yozing."
+            : "📱 Пожалуйста, отправьте ваш номер телефона:\n\nНажмите кнопку или напишите в формате +998.";
+
+        $buttonText = $user->language === 'uz' ? '📱 Telefon raqamni yuborish' : '📱 Отправить номер';
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton($buttonText, true)]
+        ], false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Telefon raqamni qabul qilish
+     */
+    private function handlePhoneInput(): void
+    {
+        $phone = $this->extractPhone($this->text);
+
+        if (!$phone) {
+            $user = User::where('chat_id', $this->chat_id)->first();
+            $text = $user->language === 'uz'
+                ? "❌ Noto'g'ri format. Iltimos, to'g'ri telefon raqam kiriting.\n\nMasalan: +998901234567"
+                : "❌ Неверный формат. Пожалуйста, введите правильный номер.\n\nНапример: +998901234567";
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text,
+                'parse_mode' => 'html'
+            ]);
+            return;
+        }
+
+        $user = User::where('chat_id', $this->chat_id)->first();
+        $user->update(['phone' => $phone]);
+
+        // Agar QR kod orqali kelgan bo'lsa - manzilni tasdiqlash
+        if ($user->temp_address) {
+            $user->update(['step' => self::STEP_CONFIRM_ADDRESS]);
+            $this->askAddressConfirmation($user);
         } else {
-            $language = $this->userRepository->language($this->chat_id);
-            $infoAttr = $language == 'uz' ? 'info' : 'info_' . $language;
-            $text = $consultation->$infoAttr;
-            $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html']);
+            // Aks holda manzil so'rash
+            $user->update(['step' => self::STEP_ADDRESS]);
+            $this->askAddress($user);
         }
     }
 
-    public function askAppealTitle(): void
+    /**
+     * Telefon raqamni ajratib olish
+     */
+    private function extractPhone(?string $text): ?string
     {
-        $text = $this->textRepository->getOrCreate('ask_appeal_title_text', $this->userRepository->language($this->chat_id));
-        $this->userRepository->page($this->chat_id, TelegramHelper::ASK_APPEAL_TITLE);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html', 'disable_web_page_preview' => true]);
+        if (!$text) return null;
+
+        // +998 formatini tekshirish
+        $text = preg_replace('/[^\d+]/', '', $text);
+
+        if (preg_match('/^\+?998\d{9}$/', $text)) {
+            return '+' . ltrim($text, '+');
+        }
+
+        return null;
     }
 
-    public function askAppealDescription(): void
+    /**
+     * Manzil so'rash (QR kod bo'lmasa)
+     */
+    private function askAddress(User $user): void
     {
-        $text = $this->textRepository->getOrCreate('ask_appeal_description_text', $this->userRepository->language($this->chat_id));
-        $this->userRepository->page($this->chat_id, TelegramHelper::ASK_APPEAL_DESCRIPTION);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html', 'disable_web_page_preview' => true]);
+        $text = $user->language === 'uz'
+            ? "🏠 Iltimos, uy va xonadon raqamingizni kiriting:\n\nMasalan: <b>12-45</b>\n(12 - uy, 45 - xonadon)"
+            : "🏠 Пожалуйста, введите номер дома и квартиры:\n\nНапример: <b>12-45</b>\n(12 - дом, 45 - квартира)";
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'parse_mode' => 'html'
+        ]);
     }
 
-    public function successAcceptAppeal($chat): void
-    {
-        $text = $this->textRepository->successAcceptText($this->userRepository->language($this->chat_id), $chat->id, $chat->updated_at);
-        $this->userRepository->page($this->chat_id, TelegramHelper::ACTIVE_CHAT);
-//        $textDeclineButton = $this->textRepository->getOrCreate('decline_appeal_button', $this->userRepository->language($this->chat_id));
-//        $option = [[$this->telegram->buildKeyboardButton($textDeclineButton)]];
-//        $keyboard = $this->telegram->buildKeyBoard($option, true, true); // decline from client side
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html']);
-    }
-
-    public function showSettings(): void
-    {
-        $text = $this->textRepository->getOrCreate('main_page_text', $this->userRepository->language($this->chat_id));
-        $textButtonChangeLang = $this->textRepository->getOrCreate('change_language_button', $this->userRepository->language($this->chat_id));
-        $textButtonDelete = $this->textRepository->getOrCreate('delete_account_button', $this->userRepository->language($this->chat_id));
-        $textButtonMain = $this->textRepository->getOrCreate('main_page_button', $this->userRepository->language($this->chat_id));
-        $this->userRepository->page($this->chat_id, TelegramHelper::SETTINGS_STEP);
-        $option = [[$this->telegram->buildKeyboardButton($textButtonChangeLang), $this->telegram->buildKeyboardButton($textButtonDelete)], [$this->telegram->buildKeyboardButton($textButtonMain)]];
-        $keyboard = $this->telegram->buildKeyBoard($option, false, true);
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'reply_markup' => $keyboard, 'parse_mode' => 'html']);
-    }
-
-    public function successChangeLang(): void
-    {
-        $text = $this->textRepository->getOrCreate('success_change_language', $this->userRepository->language($this->chat_id));
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html']);
-        $this->showMainPage();
-    }
-
-    public function historyAppeals(): void
+    /**
+     * Manzilni qabul qilish
+     */
+    private function handleAddressInput(): void
     {
         $user = User::where('chat_id', $this->chat_id)->first();
-        $appeals = $user->chats;
 
-        if (count($appeals) > 0) {
-            foreach ($appeals as $appeal) {
-                $status = TelegramHelper::statuses($appeal->status);
-                $ID = $this->textRepository->getOrCreate('appeals_history_id_text', $this->userRepository->language($this->chat_id));
-                $title = $this->textRepository->getOrCreate('appeals_history_title_text', $this->userRepository->language($this->chat_id));
-                $date = $this->textRepository->getOrCreate('appeals_history_date_text', $this->userRepository->language($this->chat_id));
-                $status_text = $this->textRepository->getOrCreate('appeals_history_status_text', $this->userRepository->language($this->chat_id));
-                $admin = $this->textRepository->getOrCreate('appeals_history_admin_text', $this->userRepository->language($this->chat_id));
-                $message = "$ID: $appeal->id\n$title: $appeal->title\n$date: $appeal->updated_at\n$status_text: $status\n$admin: $appeal->admin_name";
-                $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $message, 'parse_mode' => 'html']);
+        // Format: 12-45 yoki 12 45
+        if (preg_match('/^(\d+)[-\s](\d+)$/', trim($this->text), $matches)) {
+            $building = $matches[1];
+            $apartment = $matches[2];
+
+            $address = "Sergeli tumani, 5-mavze, {$building}-uy, {$apartment}-xonadon";
+
+            $user->update([
+                'building_number' => $building,
+                'apartment_number' => $apartment,
+                'temp_address' => $address,
+                'step' => self::STEP_CONFIRM_ADDRESS
+            ]);
+
+            $this->askAddressConfirmation($user);
+        } else {
+            $text = $user->language === 'uz'
+                ? "❌ Noto'g'ri format. Iltimos, qaytadan kiriting.\n\nMasalan: <b>12-45</b>"
+                : "❌ Неверный формат. Пожалуйста, введите снова.\n\nНапример: <b>12-45</b>";
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text,
+                'parse_mode' => 'html'
+            ]);
+        }
+    }
+
+    /**
+     * Manzilni tasdiqlash so'rash
+     */
+    private function askAddressConfirmation(User $user): void
+    {
+        $text = $user->language === 'uz'
+            ? "📍 Sizning manzilingiz:\n\n<b>{$user->temp_address}</b>\n\nTo'g'rimi?"
+            : "📍 Ваш адрес:\n\n<b>{$user->temp_address}</b>\n\nВерно?";
+
+        $yesBtn = $user->language === 'uz' ? '✅ Ha, to\'g\'ri' : '✅ Да, верно';
+        $noBtn = $user->language === 'uz' ? '❌ Yo\'q, o\'zgartirish' : '❌ Нет, изменить';
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton($yesBtn)],
+            [$this->telegram->buildKeyboardButton($noBtn)]
+        ], false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Manzil tasdiqlash
+     */
+    private function handleAddressConfirmation(): void
+    {
+        $user = User::where('chat_id', $this->chat_id)->first();
+
+        $isConfirm = ($user->language === 'uz' && $this->text === '✅ Ha, to\'g\'ri') ||
+            ($user->language === 'ru' && $this->text === '✅ Да, верно');
+
+        if ($isConfirm) {
+            $user->update([
+                'address' => $user->temp_address,
+                'step' => self::STEP_MAIN_MENU
+            ]);
+            $this->showMainMenu();
+        } else {
+            $user->update(['step' => self::STEP_ADDRESS]);
+            $this->askAddress($user);
+        }
+    }
+
+    /**
+     * Asosiy menyu
+     */
+    private function showMainMenu(): void
+    {
+        $user = User::where('chat_id', $this->chat_id)->first();
+
+        $text = $user->language === 'uz'
+            ? "🍞 <b>Tahsiin Non</b>\n\nNima qilmoqchisiz?"
+            : "🍞 <b>Tahsiin Non</b>\n\nЧто вы хотите сделать?";
+
+        $orderBtn = $user->language === 'uz' ? '🛒 Buyurtma berish' : '🛒 Сделать заказ';
+        $historyBtn = $user->language === 'uz' ? '📋 Buyurtmalarim' : '📋 Мои заказы';
+        $settingsBtn = $user->language === 'uz' ? '⚙️ Sozlamalar' : '⚙️ Настройки';
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton($orderBtn)],
+            [$this->telegram->buildKeyboardButton($historyBtn), $this->telegram->buildKeyboardButton($settingsBtn)]
+        ], false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Asosiy menyudan tanlov
+     */
+    private function handleMainMenu(): void
+    {
+        $user = User::where('chat_id', $this->chat_id)->first();
+
+        if (
+            ($user->language === 'uz' && $this->text === '🛒 Buyurtma berish') ||
+            ($user->language === 'ru' && $this->text === '🛒 Сделать заказ')
+        ) {
+            $user->update(['step' => self::STEP_SELECT_BREAD]);
+            $this->askBreadQuantity($user);
+        } elseif (
+            ($user->language === 'uz' && $this->text === '📋 Buyurtmalarim') ||
+            ($user->language === 'ru' && $this->text === '📋 Мои заказы')
+        ) {
+            $this->showOrderHistory($user);
+        } elseif (
+            ($user->language === 'uz' && $this->text === '⚙️ Sozlamalar') ||
+            ($user->language === 'ru' && $this->text === '⚙️ Настройки')
+        ) {
+            $this->showSettings($user);
+        } else {
+            $this->showMainMenu();
+        }
+    }
+
+    /**
+     * Non sonini so'rash
+     */
+    private function askBreadQuantity(User $user): void
+    {
+        $text = $user->language === 'uz'
+            ? "🍞 Nechta non buyurtma qilmoqchisiz?\n\n1 dona non: <b>3,500 so'm</b>"
+            : "🍞 Сколько хлебов вы хотите заказать?\n\n1 хлеб: <b>3,500 сум</b>";
+
+        $buttons = [];
+        $row = [];
+        for ($i = 1; $i <= 10; $i++) {
+            $row[] = $this->telegram->buildKeyboardButton((string)$i);
+            if ($i % 5 === 0) {
+                $buttons[] = $row;
+                $row = [];
             }
-        } else {
-            $text = $this->textRepository->getOrCreate('no_appeals_now', $this->userRepository->language($this->chat_id));
-            $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html']);
         }
-        $this->showMainPage();
+
+        $cancelBtn = $user->language === 'uz' ? '❌ Bekor qilish' : '❌ Отмена';
+        $buttons[] = [$this->telegram->buildKeyboardButton($cancelBtn)];
+
+        $keyboard = $this->telegram->buildKeyBoard($buttons, false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
     }
 
-    public function alreadyRegistered(): void
+    /**
+     * Non sonini qabul qilish
+     */
+    private function handleBreadSelection(): void
     {
-        $text = $this->textRepository->getOrCreate('already_registered_text', $this->userRepository->language($this->chat_id));
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html']);
-        $this->showMainPage();
+        $user = User::where('chat_id', $this->chat_id)->first();
+
+        // Bekor qilish
+        if (
+            ($user->language === 'uz' && $this->text === '❌ Bekor qilish') ||
+            ($user->language === 'ru' && $this->text === '❌ Отмена')
+        ) {
+            $user->update(['step' => self::STEP_MAIN_MENU]);
+            $this->showMainMenu();
+            return;
+        }
+
+        $quantity = (int)$this->text;
+
+        if ($quantity < 1 || $quantity > 10) {
+            $text = $user->language === 'uz'
+                ? "❌1 dan 10 gacha son kiriting."
+                : "❌ Введите число от 1 до 10.";
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text
+            ]);
+            return;
+        }
+
+        // Buyurtma yaratish yoki yangilash
+        Order::updateOrCreate(
+            [
+                'user_id' => $user->id,
+                'status' => 'pending'
+            ],
+            [
+                'quantity' => $quantity,
+                'price_per_item' => 3500,
+                'total_price' => $quantity * 3500
+            ]
+        );
+
+        $user->update(['step' => self::STEP_SELECT_TIME]);
+        $this->askDeliveryTime($user);
     }
 
-    public function technicalWork(): void
+    /**
+     * Yetkazish vaqtini so'rash
+     */
+    private function askDeliveryTime(User $user): void
     {
-        $text = $this->textRepository->getOrCreate('technical_work', $this->userRepository->language($this->chat_id));
-        $this->telegram->sendMessage(['chat_id' => $this->chat_id, 'text' => $text, 'parse_mode' => 'html']);
-        $this->showMainPage();
+        $text = $user->language === 'uz'
+            ? "🕐 Qaysi vaqt oralig'ida yetkazib berish kerak?\n\n<b>Ertaga</b> ertalab:"
+            : "🕐 В какое время доставить?\n\n<b>Завтра</b> утром:";
+
+        $buttons = [];
+        $row = [];
+        $count = 0;
+
+        foreach (self::TIME_SLOTS as $key => $label) {
+            $row[] = $this->telegram->buildKeyboardButton($label);
+            $count++;
+
+            if ($count % 2 === 0) {
+                $buttons[] = $row;
+                $row = [];
+            }
+        }
+
+        if (!empty($row)) {
+            $buttons[] = $row;
+        }
+
+        $cancelBtn = $user->language === 'uz' ? '❌ Bekor qilish' : '❌ Отмена';
+        $buttons[] = [$this->telegram->buildKeyboardButton($cancelBtn)];
+
+        $keyboard = $this->telegram->buildKeyBoard($buttons, false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
     }
 
-    private function back($step, $function): void
+    /**
+     * Vaqtni qabul qilish
+     */
+    private function handleTimeSelection(): void
     {
-        $this->userRepository->page($this->chat_id, $step);
-        $this->$function();
+        $user = User::where('chat_id', $this->chat_id)->first();
+
+        // Bekor qilish
+        if (
+            ($user->language === 'uz' && $this->text === '❌ Bekor qilish') ||
+            ($user->language === 'ru' && $this->text === '❌ Отмена')
+        ) {
+            $user->update(['step' => self::STEP_MAIN_MENU]);
+            $this->showMainMenu();
+            return;
+        }
+
+        // Vaqt topish
+        $selectedTime = null;
+        foreach (self::TIME_SLOTS as $key => $label) {
+            if ($this->text === $label) {
+                $selectedTime = $key;
+                break;
+            }
+        }
+
+        if (!$selectedTime) {
+            $this->askDeliveryTime($user);
+            return;
+        }
+
+        // Buyurtmaga vaqt qo'shish
+        $order = Order::where('user_id', $user->id)
+            ->where('status', 'pending')
+            ->latest()
+            ->first();
+
+        if (!$order) {
+            $this->showMainMenu();
+            return;
+        }
+
+        $order->update([
+            'delivery_time_slot' => $selectedTime,
+            'delivery_date' => now()->addDay()->format('Y-m-d')
+        ]);
+
+        $user->update(['step' => self::STEP_CONFIRM_ORDER]);
+        $this->showOrderConfirmation($user, $order);
     }
 
-    private function backButton(): bool|string
+    /**
+     * Buyurtmani tasdiqlashdan oldin ko'rsatish
+     */
+    private function showOrderConfirmation(User $user, Order $order): void
     {
-        $backButton = $this->textRepository->getOrCreate('back_button', $this->userRepository->language($this->chat_id));
-        $textButtonMain = $this->textRepository->getOrCreate('main_page_button', $this->userRepository->language($this->chat_id));
-        $option = [[$this->telegram->buildKeyboardButton($backButton), $this->telegram->buildKeyboardButton($textButtonMain)]];
-        return $this->telegram->buildKeyBoard($option, false, true);
+        $deliveryDate = \Carbon\Carbon::parse($order->delivery_date)->locale($user->language === 'uz' ? 'uz' : 'ru')->isoFormat('D MMMM');
+
+        $text = $user->language === 'uz'
+            ? "✅ <b>Buyurtmangizni tasdiqlang</b>\n\n"
+            . "🍞 Non: <b>{$order->quantity} dona</b>\n"
+            . "💰 Summa: <b>" . number_format($order->total_price, 0, '.', ' ') . " so'm</b>\n"
+            . "📍 Manzil: <b>{$user->address}</b>\n"
+            . "🕐 Vaqt: <b>{$order->delivery_time_slot}</b>\n"
+            . "📅 Sana: <b>{$deliveryDate}</b>\n\n"
+            . "To'lov: <b>Naqd pul (yetkazishda)</b>"
+            : "✅ <b>Подтвердите ваш заказ</b>\n\n"
+            . "🍞 Хлеб: <b>{$order->quantity} шт</b>\n"
+            . "💰 Сумма: <b>" . number_format($order->total_price, 0, '.', ' ') . " сум</b>\n"
+            . "📍 Адрес: <b>{$user->address}</b>\n"
+            . "🕐 Время: <b>{$order->delivery_time_slot}</b>\n"
+            . "📅 Дата: <b>{$deliveryDate}</b>\n\n"
+            . "Оплата: <b>Наличными (при доставке)</b>";
+
+        $confirmBtn = $user->language === 'uz' ? '✅ Tasdiqlash' : '✅ Подтвердить';
+        $cancelBtn = $user->language === 'uz' ? '❌ Bekor qilish' : '❌ Отмена';
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton($confirmBtn)],
+            [$this->telegram->buildKeyboardButton($cancelBtn)]
+        ], false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
     }
 
-    public function handleRegistration(): void
+    /**
+     * Buyurtmani tasdiqlash
+     */
+    private function handleOrderConfirmation(): void
     {
-        $user = $this->userRepository->checkOrCreate($this->chat_id);
-        if ($user['exists']) {
-            $this->alreadyRegistered();
+        $user = User::where('chat_id', $this->chat_id)->first();
+
+        $isConfirm = ($user->language === 'uz' && $this->text === '✅ Tasdiqlash') ||
+            ($user->language === 'ru' && $this->text === '✅ Подтвердить');
+
+        if ($isConfirm) {
+            $order = Order::where('user_id', $user->id)
+                ->where('status', 'pending')
+                ->latest()
+                ->first();
+
+            if (!$order) {
+                $this->showMainMenu();
+                return;
+            }
+
+            // Buyurtma raqamini generatsiya qilish
+            $orderNumber = 'TB-' . str_pad($order->id, 4, '0', STR_PAD_LEFT);
+
+            $order->update([
+                'status' => 'confirmed',
+                'order_number' => $orderNumber,
+                'confirmed_at' => now()
+            ]);
+
+            // Foydalanuvchiga xabar
+            $this->sendOrderSuccess($user, $order);
+
+            // Admin guruhga xabar
+            $this->sendToAdminGroup($user, $order);
+
+            // Asosiy menyuga qaytish
+            $user->update(['step' => self::STEP_MAIN_MENU]);
+            $this->showMainMenu();
         } else {
-            $this->chooseLanguage();
+            $user->update(['step' => self::STEP_MAIN_MENU]);
+            $this->showMainMenu();
         }
     }
 
-    public function send($chat_id, $message)
+    /**
+     * Buyurtma muvaffaqiyatli qabul qilinganligi haqida xabar
+     */
+    private function sendOrderSuccess(User $user, Order $order): void
     {
-        return $this->telegram->sendMessage(['chat_id' => $chat_id, 'text' => $message, 'parse_mode' => 'html']);
+        $deliveryDate = \Carbon\Carbon::parse($order->delivery_date)->locale($user->language === 'uz' ? 'uz' : 'ru')->isoFormat('D MMMM');
+
+        $text = $user->language === 'uz'
+            ? "🎉 <b>Buyurtma qabul qilindi!</b>\n\n"
+            . "📦 Buyurtma raqami: <b>#{$order->order_number}</b>\n"
+            . "🍞 Non: <b>{$order->quantity} dona</b>\n"
+            . "💰 Summa: <b>" . number_format($order->total_price, 0, '.', ' ') . " so'm</b>\n"
+            . "📅 Sana: <b>{$deliveryDate}</b>\n"
+            . "🕐 Vaqt: <b>{$order->delivery_time_slot}</b>\n\n"
+            . "📱 Agar savollaringiz bo'lsa, @tahsiin_support ga murojaat qiling.\n\n"
+            . "Ertaga ko'rishguncha! 🌅"
+            : "🎉 <b>Заказ принят!</b>\n\n"
+            . "📦 Номер заказа: <b>#{$order->order_number}</b>\n"
+            . "🍞 Хлеб: <b>{$order->quantity} шт</b>\n"
+            . "💰 Сумма: <b>" . number_format($order->total_price, 0, '.', ' ') . " сум</b>\n"
+            . "📅 Дата: <b>{$deliveryDate}</b>\n"
+            . "🕐 Время: <b>{$order->delivery_time_slot}</b>\n\n"
+            . "📱 Если есть вопросы, обращайтесь @tahsiin_support.\n\n"
+            . "До завтра! 🌅";
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Admin guruhga buyurtma haqida xabar yuborish
+     */
+    private function sendToAdminGroup(User $user, Order $order): void
+    {
+        $deliveryDate = \Carbon\Carbon::parse($order->delivery_date)->format('d.m.Y');
+
+        $text = "🔔 <b>YANGI BUYURTMA</b>\n\n";
+        $text .= "📦 Raqam: <b>#{$order->order_number}</b>\n";
+        $text .= "👤 Mijoz: {$user->first_name} {$user->last_name}\n";
+        $text .= "📱 Telefon: <b>{$user->phone}</b>\n";
+        $text .= "📍 Manzil: <b>{$user->address}</b>\n\n";
+        $text .= "🍞 Non: <b>{$order->quantity} dona</b>\n";
+        $text .= "💰 Summa: <b>" . number_format($order->total_price, 0, '.', ' ') . " so'm</b>\n";
+        $text .= "📅 Sana: <b>{$deliveryDate}</b>\n";
+        $text .= "🕐 Vaqt: <b>{$order->delivery_time_slot}</b>\n";
+        $text .= "━━━━━━━━━━━━━━━━━━\n";
+        $text .= "⏰ <i>Buyurtma vaqti: " . now()->format('H:i') . "</i>";
+
+        // Inline keyboard - Done/Fail
+        $keyboard = $this->telegram->buildInlineKeyBoard([
+            [
+                $this->telegram->buildInlineKeyboardButton('✅ Bajarildi', '', "order_done_{$order->id}"),
+                $this->telegram->buildInlineKeyboardButton('❌ Bekor', '', "order_fail_{$order->id}")
+            ]
+        ]);
+
+        $this->telegram->sendMessage([
+            'chat_id' => self::ADMIN_GROUP_ID,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Buyurtmalar tarixini ko'rsatish
+     */
+    private function showOrderHistory(User $user): void
+    {
+        $orders = Order::where('user_id', $user->id)
+            ->whereIn('status', ['confirmed', 'completed', 'cancelled'])
+            ->orderBy('created_at', 'desc')
+            ->limit(10)
+            ->get();
+
+        if ($orders->isEmpty()) {
+            $text = $user->language === 'uz'
+                ? "📋 Hozircha buyurtmalaringiz yo'q."
+                : "📋 У вас пока нет заказов.";
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text
+            ]);
+            return;
+        }
+
+        foreach ($orders as $order) {
+            $status = match($order->status) {
+                'confirmed' => $user->language === 'uz' ? '⏳ Tayyorlanmoqda' : '⏳ Готовится',
+                'completed' => $user->language === 'uz' ? '✅ Yetkazildi' : '✅ Доставлено',
+                'cancelled' => $user->language === 'uz' ? '❌ Bekor qilindi' : '❌ Отменён',
+                default => '❓'
+            };
+
+            $date = \Carbon\Carbon::parse($order->delivery_date)->format('d.m.Y');
+
+            $text = $user->language === 'uz'
+                ? "📦 <b>#{$order->order_number}</b>\n"
+                . "🍞 {$order->quantity} dona\n"
+                . "💰 " . number_format($order->total_price, 0, '.', ' ') . " so'm\n"
+                . "📅 {$date} • {$order->delivery_time_slot}\n"
+                . "📊 Holat: {$status}"
+                : "📦 <b>#{$order->order_number}</b>\n"
+                . "🍞 {$order->quantity} шт\n"
+                . "💰 " . number_format($order->total_price, 0, '.', ' ') . " сум\n"
+                . "📅 {$date} • {$order->delivery_time_slot}\n"
+                . "📊 Статус: {$status}";
+
+            $this->telegram->sendMessage([
+                'chat_id' => $this->chat_id,
+                'text' => $text,
+                'parse_mode' => 'html'
+            ]);
+        }
+    }
+
+    /**
+     * Sozlamalar
+     */
+    private function showSettings(User $user): void
+    {
+        $text = $user->language === 'uz'
+            ? "⚙️ <b>Sozlamalar</b>\n\n"
+            . "👤 {$user->first_name} {$user->last_name}\n"
+            . "📱 {$user->phone}\n"
+            . "📍 {$user->address}\n"
+            . "🌐 Til: O'zbekcha"
+            : "⚙️ <b>Настройки</b>\n\n"
+            . "👤 {$user->first_name} {$user->last_name}\n"
+            . "📱 {$user->phone}\n"
+            . "📍 {$user->address}\n"
+            . "🌐 Язык: Русский";
+
+        $changeAddressBtn = $user->language === 'uz' ? '📍 Manzilni o\'zgartirish' : '📍 Изменить адрес';
+        $changeLangBtn = $user->language === 'uz' ? '🌐 Tilni o\'zgartirish' : '🌐 Изменить язык';
+        $backBtn = $user->language === 'uz' ? '◀️ Ortga' : '◀️ Назад';
+
+        $keyboard = $this->telegram->buildKeyBoard([
+            [$this->telegram->buildKeyboardButton($changeAddressBtn)],
+            [$this->telegram->buildKeyboardButton($changeLangBtn)],
+            [$this->telegram->buildKeyboardButton($backBtn)]
+        ], false, true);
+
+        $this->telegram->sendMessage([
+            'chat_id' => $this->chat_id,
+            'text' => $text,
+            'reply_markup' => $keyboard,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Callback query (inline tugmalar)
+     */
+    public function handleCallbackQuery(): void
+    {
+        $callbackQuery = $this->telegram->Callback_Query();
+        if (!$callbackQuery) return;
+
+        $data = $callbackQuery['data'];
+        $messageId = $callbackQuery['message']['message_id'];
+        $chatId = $callbackQuery['message']['chat']['id'];
+
+        // order_done_123 yoki order_fail_123
+        if (str_starts_with($data, 'order_done_')) {
+            $orderId = str_replace('order_done_', '', $data);
+            $this->completeOrder($orderId, $messageId, $chatId);
+        } elseif (str_starts_with($data, 'order_fail_')) {
+            $orderId = str_replace('order_fail_', '', $data);
+            $this->cancelOrder($orderId, $messageId, $chatId);
+        }
+
+        // Callback javob berish
+        $this->telegram->answerCallbackQuery([
+            'callback_query_id' => $callbackQuery['id']
+        ]);
+    }
+
+    /**
+     * Buyurtmani bajarilgan deb belgilash
+     */
+    private function completeOrder(int $orderId, int $messageId, string $chatId): void
+    {
+        $order = Order::find($orderId);
+        if (!$order) return;
+
+        $order->update([
+            'status' => 'completed',
+            'completed_at' => now()
+        ]);
+
+        // Xabarni yangilash
+        $text = $this->telegram->Callback_Message()['text'];
+        $text .= "\n\n✅ <b>BAJARILDI</b>\n⏰ " . now()->format('H:i d.m.Y');
+
+        $this->telegram->editMessageText([
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'text' => $text,
+            'parse_mode' => 'html'
+        ]);
+
+        // Mijozga xabar
+        $user = $order->user;
+        $clientText = $user->language === 'uz'
+            ? "✅ <b>Buyurtma yetkazildi!</b>\n\n📦 #{$order->order_number}\n\nRahmat! Yana buyurtma bering 🍞"
+            : "✅ <b>Заказ доставлен!</b>\n\n📦 #{$order->order_number}\n\nСпасибо! Заказывайте снова 🍞";
+
+        $this->telegram->sendMessage([
+            'chat_id' => $user->chat_id,
+            'text' => $clientText,
+            'parse_mode' => 'html'
+        ]);
+    }
+
+    /**
+     * Buyurtmani bekor qilish
+     */
+    private function cancelOrder(int $orderId, int $messageId, string $chatId): void
+    {
+        $order = Order::find($orderId);
+        if (!$order) return;
+
+        $order->update([
+            'status' => 'cancelled',
+            'cancelled_at' => now()
+        ]);
+
+        // Xabarni yangilash
+        $text = $this->telegram->Callback_Message()['text'];
+        $text .= "\n\n❌ <b>BEKOR QILINDI</b>\n⏰ " . now()->format('H:i d.m.Y');
+
+        $this->telegram->editMessageText([
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+            'text' => $text,
+            'parse_mode' => 'html'
+        ]);
+
+        // Mijozga xabar
+        $user = $order->user;
+        $clientText = $user->language === 'uz'
+            ? "❌ Afsuski, buyurtmangiz bajarilmadi.\n\n📦 #{$order->order_number}\n\nYangi buyurtma berishingiz mumkin."
+            : "❌ К сожалению, ваш заказ не выполнен.\n\n📦 #{$order->order_number}\n\nВы можете сделать новый заказ.";
+
+        $this->telegram->sendMessage([
+            'chat_id' => $user->chat_id,
+            'text' => $clientText,
+            'parse_mode' => 'html'
+        ]);
     }
 }

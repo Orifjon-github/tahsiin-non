@@ -1,115 +1,219 @@
 <?php
 
+// app/Repositories/UserRepository.php
+
 namespace App\Repositories;
 
 use App\Models\User;
-use Illuminate\Support\Facades\Cache;
 
 class UserRepository
 {
-    private User $model;
-
-    public function __construct(User $model)
+    /**
+     * Chat ID bo'yicha foydalanuvchini topish yoki yaratish
+     */
+    public function checkOrCreate(string $chatId): array
     {
-        $this->model = $model;
-    }
+        $user = User::where('chat_id', $chatId)->first();
 
-    public function checkOrCreate(string $chat_id): array
-    {
-        $cacheKey = "user_{$chat_id}";
-
-        // Check cache first
-        $user = Cache::remember($cacheKey, 31536000, function () use ($chat_id) {
-            return $this->model->where('chat_id', $chat_id)->first();
-        });
-
-        if ($user && $user->language !== null && $user->phone !== null && $user->status == 'active') {
-            return [
-                'exists' => true,
-                'user' => $user
-            ];
+        if ($user) {
+            return ['user' => $user, 'exists' => true];
         }
 
-        // Update or create and refresh cache
-        $user = $this->model->updateOrCreate(['chat_id' => $chat_id], ['status' => 'active']);
-        Cache::put($cacheKey, $user, 3600);
+        $user = User::create([
+            'chat_id' => $chatId,
+            'step' => 'start',
+            'language' => 'uz'
+        ]);
 
-        return [
-            'exists' => false,
-            'user' => $user
-        ];
+        return ['user' => $user, 'exists' => false];
     }
 
-    public function page($chat_id, $step = null)
+    /**
+     * Foydalanuvchini yangilash
+     */
+    public function update(string $chatId, array $data): ?User
     {
-        $cacheKey = "user_step_{$chat_id}";
+        $user = User::where('chat_id', $chatId)->first();
+
+        if ($user) {
+            $user->update($data);
+            return $user->fresh();
+        }
+
+        return null;
+    }
+
+    /**
+     * Qadamni yangilash
+     */
+    public function page(string $chatId, ?string $step = null): ?string
+    {
+        $user = User::where('chat_id', $chatId)->first();
+
+        if (!$user) {
+            return null;
+        }
 
         if ($step !== null) {
-            // Update in DB and cache
-            $user = $this->model->updateOrCreate(['chat_id' => $chat_id], ['step' => $step]);
-            Cache::put($cacheKey, $step, 3600);
-            return $user;
+            $user->update(['step' => $step]);
+            return $step;
         }
 
-        // Fetch from cache or DB
-        return Cache::remember($cacheKey, 31536000, function () use ($chat_id) {
-            return $this->model->where('chat_id', $chat_id)->first()?->step;
-        });
+        return $user->step;
     }
 
-    public function language($chat_id, $language = null)
+    /**
+     * Tilni olish yoki o'rnatish
+     */
+    public function language(string $chatId, ?string $lang = null): ?string
     {
-        $cacheKey = "user_language_{$chat_id}";
+        $user = User::where('chat_id', $chatId)->first();
 
-        if ($language !== null) {
-            // Update in DB and cache
-            $user = $this->model->updateOrCreate(['chat_id' => $chat_id], ['language' => $language]);
-            Cache::put($cacheKey, $language, 3600);
-            return $user;
+        if (!$user) {
+            return null;
         }
 
-        // Fetch from cache or DB
-        return Cache::remember($cacheKey, 31536000, function () use ($chat_id) {
-            return $this->model->where('chat_id', $chat_id)->first()?->language;
-        });
-    }
-
-    public function phone($chat_id, $phone = null)
-    {
-        $cacheKey = "user_phone_{$chat_id}";
-
-        if ($phone !== null) {
-            // Update in DB and cache
-            $user = $this->model->updateOrCreate(['chat_id' => $chat_id], ['phone' => $phone]);
-            Cache::put($cacheKey, $phone, 3600);
-            return $user;
+        if ($lang !== null) {
+            $user->update(['language' => $lang]);
+            return $lang;
         }
 
-        // Fetch from cache or DB
-        return Cache::remember($cacheKey, 31536000, function () use ($chat_id) {
-            return $this->model->where('chat_id', $chat_id)->first()?->phone;
-        });
+        return $user->language;
     }
 
-    public function consultation($chat_id, $consultation = null)
+    /**
+     * Telefon raqamni saqlash
+     */
+    public function phone(string $chatId, string $phone): ?User
     {
-        $cacheKey = "user_consultation_{$chat_id}";
+        return $this->update($chatId, ['phone' => $phone]);
+    }
 
-        if ($consultation !== null) {
-            // Update in DB and cache
-            $user = $this->model->updateOrCreate(['chat_id' => $chat_id], ['consultation_id' => $consultation]);
-            Cache::put($cacheKey, $consultation, 3600);
-            return $user;
+    /**
+     * Konsultatsiya ID ni saqlash
+     */
+    public function consultation(string $chatId, ?int $consultationId = null): ?int
+    {
+        $user = User::where('chat_id', $chatId)->first();
+
+        if (!$user) {
+            return null;
         }
 
-        // Fetch from cache or DB
-        return Cache::remember($cacheKey, 31536000, function () use ($chat_id) {
-            return $this->model->where('chat_id', $chat_id)->first()?->consultation_id;
-        });
+        if ($consultationId !== null) {
+            $user->update(['consultation' => $consultationId]);
+            return $consultationId;
+        }
+
+        return $user->consultation;
     }
 
-    public function delete($chat_id): void
+    /**
+     * Foydalanuvchini o'chirish (soft delete)
+     */
+    public function delete(string $chatId): bool
     {
-        $this->model->where('chat_id', $chat_id)->update(['status' => 'delete-account']);
+        $user = User::where('chat_id', $chatId)->first();
+
+        if ($user) {
+            return $user->delete();
+        }
+
+        return false;
+    }
+
+    /**
+     * Chat ID bo'yicha foydalanuvchini topish
+     */
+    public function findByChatId(string $chatId): ?User
+    {
+        return User::where('chat_id', $chatId)->first();
+    }
+}
+
+// app/Repositories/TelegramTextRepository.php
+
+namespace App\Repositories;
+
+use Illuminate\Support\Facades\Cache;
+
+class TelegramTextRepository
+{
+    private array $texts = [
+        // O'zbek tilida
+        'uz' => [
+            'ask_phone_text' => '📱 Iltimos, telefon raqamingizni yuboring:',
+            'ask_phone_button' => '📱 Telefon raqamni yuborish',
+            'ask_correct_phone_text' => '❌ Noto\'g\'ri format. Qaytadan kiriting.',
+            'main_page_text' => '🍞 <b>Tahsiin Non</b>\n\nNima qilmoqchisiz?',
+            'consultation_button' => '💬 Maslahat',
+            'help_button' => '❓ Yordam',
+            'appeals_button' => '✍️ Murojaat',
+            'history_of_appeals_button' => '📋 Tarix',
+            'settings_button' => '⚙️ Sozlamalar',
+            'contact_button' => '📞 Aloqa',
+            'main_page_button' => '🏠 Bosh sahifa',
+            'back_button' => '◀️ Ortga',
+        ],
+        // Rus tilida
+        'ru' => [
+            'ask_phone_text' => '📱 Пожалуйста, отправьте ваш номер:',
+            'ask_phone_button' => '📱 Отправить номер',
+            'ask_correct_phone_text' => '❌ Неверный формат. Введите снова.',
+            'main_page_text' => '🍞 <b>Tahsiin Non</b>\n\nЧто хотите сделать?',
+            'consultation_button' => '💬 Консультация',
+            'help_button' => '❓ Помощь',
+            'appeals_button' => '✍️ Обращение',
+            'history_of_appeals_button' => '📋 История',
+            'settings_button' => '⚙️ Настройки',
+            'contact_button' => '📞 Контакт',
+            'main_page_button' => '🏠 Главная',
+            'back_button' => '◀️ Назад',
+        ]
+    ];
+
+    /**
+     * Matnni olish yoki yaratish
+     */
+    public function getOrCreate(string $key, string $lang = 'uz'): string
+    {
+        return $this->texts[$lang][$key] ?? $key;
+    }
+
+    /**
+     * Kalit so'z orqali topish
+     */
+    public function getKeyword(string $text, string $lang = 'uz'): ?string
+    {
+        $texts = $this->texts[$lang] ?? [];
+
+        $key = array_search($text, $texts);
+
+        return $key ?: null;
+    }
+
+    /**
+     * Matnni klaviatura bilan tekshirish
+     */
+    public function checkTextWithKeyboard(string $text): bool
+    {
+        foreach ($this->texts as $langTexts) {
+            if (in_array($text, $langTexts)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Buyurtma qabul qilindi matni
+     */
+    public function successAcceptText(string $lang, int $orderId, string $date): string
+    {
+        if ($lang === 'uz') {
+            return "✅ <b>Buyurtma qabul qilindi!</b>\n\n📦 Raqam: #{$orderId}\n📅 Vaqt: {$date}";
+        }
+
+        return "✅ <b>Заказ принят!</b>\n\n📦 Номер: #{$orderId}\n📅 Время: {$date}";
     }
 }

@@ -19,21 +19,9 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-Route::middleware(['auth', 'elk'])->group(function () {
-    Route::prefix('sendMe')->group(function () {
-        Route::post('/start', [TelegramBotController::class, 'sendMeStart']);
-        Route::post('/send', [TelegramBotController::class, 'sendMeSend']);
-    });
-
-    Route::prefix('ibank')->group(function () {
-        Route::post('/start', [TelegramBotController::class, 'ibankStart']);
-        Route::post('/send', [TelegramBotController::class, 'ibankSend']);
-    });
-
-    Route::prefix('supplier')->group(function () {
-        Route::post('/start', [SupplierController::class, 'start']);
-        Route::post('/send-payment-info', [SupplierController::class, 'sendPaymentInfo']);
-    });
+Route::middleware('elk')->group(function () {
+    Route::post('/start', [TelegramBotController::class, 'start']);
+    Route::post('/send', [TelegramBotController::class, 'send']);
 });
 
 Route::get('/ping', [MainController::class, 'ping']);

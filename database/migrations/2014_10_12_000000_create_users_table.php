@@ -13,12 +13,25 @@ return new class extends Migration
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
-            $table->string('name')->nullable();
-            $table->string('phone')->unique()->nullable();
             $table->string('chat_id')->unique();
-            $table->enum('language', ['ru', 'en', 'uz'])->nullable();
-            $table->string('step')->default('start');
-            $table->enum('status', ['active', 'delete-account'])->default('active');
+            $table->string('first_name')->nullable();
+            $table->string('last_name')->nullable();
+            $table->string('username')->nullable();
+            $table->string('phone', 20)->nullable();
+            $table->string('language', 2)->default('uz'); // uz, ru
+            $table->string('step', 50)->default('start');
+            $table->string('building_number', 10)->nullable(); // Uy raqami
+            $table->string('apartment_number', 10)->nullable(); // Xonadon raqami
+            $table->string('temp_address')->nullable(); // Vaqtinchalik manzil
+            $table->string('address')->nullable(); // Tasdiqlangan manzil
+
+            $table->integer('consultation')->nullable();
+            $table->boolean('is_active')->default(true);
+            $table->timestamps();
+            $table->softDeletes();
+
+            $table->index('chat_id');
+            $table->index('phone');
             $table->rememberToken();
             $table->timestamps();
         });

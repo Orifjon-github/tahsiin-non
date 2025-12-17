@@ -43,5 +43,41 @@ class User extends Authenticatable
     protected $casts = [
         'email_verified_at' => 'datetime',
         'password' => 'hashed',
+        'is_active' => 'boolean',
     ];
+    /**
+     * Foydalanuvchining buyurtmalari
+     */
+    public function orders()
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    /**
+     * Faol buyurtmalar
+     */
+    public function activeOrders()
+    {
+        return $this->orders()
+            ->whereIn('status', ['pending', 'confirmed'])
+            ->orderBy('created_at', 'desc');
+    }
+
+    /**
+     * Oxirgi buyurtma
+     */
+    public function latestOrder()
+    {
+        return $this->orders()
+            ->latest()
+            ->first();
+    }
+
+    /**
+     * To'liq ism
+     */
+    public function getFullNameAttribute(): string
+    {
+        return trim("{$this->first_name} {$this->last_name}");
+    }
 }
