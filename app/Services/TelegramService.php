@@ -93,6 +93,8 @@ class TelegramService
                 return true;
             }
 
+            $this->syncUserProfile($user);
+
             $step = $user->step ?? self::STEP_START;
 
             switch ($step) {
@@ -164,7 +166,7 @@ class TelegramService
                 'language' => 'uz',
             ]
         );
-
+        $this->syncUserProfile($user);
         // Agar QR kod orqali kelgan bo'lsa (faqat uy raqami)
         if (count($params) >= 2 && $params[0] === 'ref') {
             $building = $params[1] ?? null;
@@ -1146,5 +1148,35 @@ class TelegramService
             'text' => $clientText,
             'parse_mode' => 'html'
         ]);
+    }
+
+    /**
+     * Foydalanuvchi profil ma'lumotlarini (ism, familiya) yangilash
+     */
+    private function syncUserProfile(User $user): void
+    {
+        $data = $this->telegram->getData();
+
+        $from = $data['message']['from'] ?? $data['callback_query']['from'] ?? null;
+
+        if (!$from) {
+            return;
+        }
+
+        $firstName = $from['first_name'] ?? '';
+        $lastName = $from['last_name'] ?? null;
+        $username = $from['username'] ?? null;
+
+        if (
+            $user->first_name !== $firstName ||
+            $user->last_name !== $lastName ||
+            $user->username !== $username
+        ) {
+            $user->update([
+                'first_name' => $firstName,
+                'last_name' => $lastName,
+                'username' => $username,
+            ]);
+        }
     }
 }
