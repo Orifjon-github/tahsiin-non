@@ -100,6 +100,7 @@ class Telegram
     public function __construct(LogService $logService)
     {
         $this->data = $this->getData();
+        $this->bot_token = env('TELEGRAM_BOT_TOKEN');
         $this->logService = $logService;
     }
 
