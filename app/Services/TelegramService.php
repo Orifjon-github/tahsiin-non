@@ -177,7 +177,14 @@ class TelegramService
                     'from_qr' => true // QR kod orqali kelganini belgilash
                 ]);
 
-                $this->sendWelcomeWithBuilding($user);
+                if (!empty($user->phone)) {
+                    $user->update(['step' => self::STEP_ADDRESS]);
+                    $this->askApartmentNumber($user);
+                } else {
+                    // Yangi user bo'lsa - tilni tanlashdan boshlaydi
+                    $user->update(['step' => self::STEP_START]);
+                    $this->sendWelcomeWithBuilding($user);
+                }
                 return;
             }
         }
