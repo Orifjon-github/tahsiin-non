@@ -700,7 +700,7 @@ class TelegramService
             }
 
             // Buyurtma raqamini generatsiya qilish
-            $orderNumber = 'TB-' . str_pad($order->id, 4, '0', STR_PAD_LEFT);
+            $orderNumber = 'TN-' . strtoupper(substr(uniqid(), -8));
 
             $order->update([
                 'status' => 'confirmed',

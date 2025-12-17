@@ -22,8 +22,8 @@ return new class extends Migration
             $table->decimal('total_price', 10, 2);
 
             // Yetkazish
-            $table->date('delivery_date');
-            $table->string('delivery_time_slot', 20); // 7:00-7:30
+            $table->date('delivery_date')->nullable();
+            $table->string('delivery_time_slot', 20)->nullable(); // 7:00-7:30
 
             // Holat
             $table->enum('status', [
