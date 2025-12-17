@@ -148,9 +148,9 @@ class TelegramService
         );
 
         // Agar QR kod orqali kelgan bo'lsa
-        if (count($params) >= 3 && $params[1] === 'ref') {
-            $building = $params[2] ?? null;
-            $apartment = $params[3] ?? null;
+        if (count($params) >= 3 && $params[0] === 'ref') {
+            $building = $params[1] ?? null;
+            $apartment = $params[2] ?? null;
 
             if ($building && $apartment) {
                 // Manzilni saqlash
