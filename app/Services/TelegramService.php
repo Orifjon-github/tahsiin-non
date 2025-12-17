@@ -46,7 +46,7 @@ class TelegramService
     ];
 
     // Telegram guruh ID (o'zingizni qo'ying)
-    const ADMIN_GROUP_ID = '-5030932865'; // Bu yerga guruh ID ni qo'ying
+    const ADMIN_GROUP_ID = '-3626670279'; // Bu yerga guruh ID ni qo'ying
 
     public function __construct(
         Telegram $telegram,
