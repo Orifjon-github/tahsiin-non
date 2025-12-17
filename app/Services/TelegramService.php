@@ -136,7 +136,8 @@ class TelegramService
     {
         // QR kod orqali kelgan bo'lsa: /start ref_12_45
         // 12 - uy raqami, 45 - xonadon raqami
-        $params = explode('_', $this->text);
+        $payload = trim(str_replace('/start', '', $this->text));
+        $params = explode('_', $payload);
 
         $user = User::firstOrCreate(
             ['chat_id' => $this->chat_id],
@@ -156,7 +157,7 @@ class TelegramService
                 $user->update([
                     'building_number' => $building,
                     'apartment_number' => $apartment,
-                    'temp_address' => "Sergeli tumani, 5-mavze, {$building}-uy, {$apartment}-xonadon"
+                    'temp_address' => "Yashnabod tumani, Xavas mahalla, {$building}-uy, {$apartment}-xonadon"
                 ]);
 
                 $this->sendWelcomeWithAddress($user);
