@@ -13,7 +13,6 @@ return new class extends Migration
     {
         Schema::create('orders', function (Blueprint $table) {
             $table->id();
-            $table->id();
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
 
             // Buyurtma ma'lumotlari
@@ -45,7 +44,6 @@ return new class extends Migration
             $table->index('order_number');
             $table->index('delivery_date');
             $table->index('status');
-            $table->timestamps();
         });
     }
 
