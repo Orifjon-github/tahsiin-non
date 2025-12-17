@@ -49,7 +49,7 @@ class Order extends Model
 
         static::creating(function ($order) {
             if (!$order->order_number) {
-                $order->order_number = 'TB-' . str_pad($order->id ?? 1, 4, '0', STR_PAD_LEFT);
+                $order->order_number = 'TB-' . strtoupper(substr(uniqid(), -8));;
             }
         });
     }
